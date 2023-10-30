@@ -27,7 +27,13 @@ from .utils import (
     optional_float,
     optional_int,
     str2bool,
+    get_optimizer
 )
+from .vocab import KoreanSpeechVocabulary
+import nova
+from nova import DATASET_PATH
+from metrics import get_metric
+
 
 if TYPE_CHECKING:
     from .model import Whisper
@@ -368,11 +374,48 @@ def transcribe(
             # update progress bar
             pbar.update(min(content_frames, seek) - previous_seek)
 
-    return dict(
-        text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),
-        segments=all_segments,
-        language=language,
-    )
+    return tokenizer.decode(all_tokens[len(initial_prompt_tokens) :])
+        # segments=all_segments,
+        # language=language,
+
+def inference(path, model, **kwargs):
+    model.eval()
+
+    results = []
+    for i in glob(os.path.join(path, '*')):
+        results.append(
+            {
+                'filename' : i.split('/')[-1],
+                'text': transcribe()
+            }
+        )
+
+
+def bind_model(model, optimizer=None):
+    def save(path, *args, **kwargs):
+        state = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict()
+        }
+        torch.save(state, os.path.join(path, 'model.pt'))
+        print('Model saved')
+
+    def load(path, *args, **kwargs):
+        state = torch.load(os.path.join(path, 'model.pt'))
+        model.load_state_dict(state['model'])
+        if 'optimizer' in state and optimizer:
+            optimizer.load_state_dict(state['optimizer'])
+        print('Model loaded')
+
+    # 추론
+    def infer(path, **kwargs):
+        return inference(path, model)
+
+    nova.bind(save=save, load=load, infer=infer)  # 'nova.bind' function must be called at the end.
+
+
+
+
 
 
 def cli():
@@ -413,6 +456,10 @@ def cli():
     parser.add_argument("--max_line_width", type=optional_int, default=None, help="(requires --word_timestamps True) the maximum number of characters in a line before breaking the line")
     parser.add_argument("--max_line_count", type=optional_int, default=None, help="(requires --word_timestamps True) the maximum number of lines in a segment")
     parser.add_argument("--threads", type=optional_int, default=0, help="number of threads used by torch for CPU inference; supercedes MKL_NUM_THREADS/OMP_NUM_THREADS")
+    parser.add_argument('--optimizer', type=str, default='adam')
+    parser.add_argument('--weight_decay', type=float, default=1e-05)
+    parser.add_argument('--init_lr', type=float, default=1e-06)
+
     # fmt: on
 
     args = parser.parse_args().__dict__
@@ -422,6 +469,10 @@ def cli():
     output_format: str = args.pop("output_format")
     device: str = args.pop("device")
     os.makedirs(output_dir, exist_ok=True)
+    args.dataset_path = os.path.join(DATASET_PATH, 'train', 'train_data')
+    label_path = os.path.join(DATASET_PATH, 'train', 'train_label')
+
+    vocab = KoreanSpeechVocabulary(os.path.join(os.getcwd(), 'labels.csv'), output_unit='character')
 
     if model_name.endswith(".en") and args["language"] not in {"en", "English"}:
         if args["language"] is not None:
@@ -452,9 +503,21 @@ def cli():
     if args["max_line_count"] and not args["max_line_width"]:
         warnings.warn("--max_line_count has no effect without --max_line_width")
     writer_args = {arg: args.pop(arg) for arg in word_options}
-    for audio_path in args.pop("audio"):
-        result = transcribe(model, audio_path, temperature=temperature, **args)
-        writer(result, audio_path, writer_args)
+    # for audio_path in args.pop("audio"):
+    result = transcribe(model, audio_path, temperature=temperature, **args)
+    writer(result, audio_path, writer_args)
+
+    # bind_model이 들어가야 함 bind model은 save, load, infer.
+    # save는 model, model.pt를 불러와야 하고, path를 지정은 안해줘도 되는듯
+    # save랑 load, infer 매개변수는 nova에서 지정함.
+    optimizer = get_optimizer(model, args)
+    bind_model(model, optimizer)
+    metric = get_metric(metric_name='CER', vocab=vocab)
+
+
+
+
+
 
 
 if __name__ == "__main__":
