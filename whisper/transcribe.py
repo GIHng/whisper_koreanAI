@@ -29,11 +29,11 @@ from .utils import (
     str2bool,
     get_optimizer
 )
-from .vocab import KoreanSpeechVocabulary
+from vocab import KoreanSpeechVocabulary
 import nova
 from nova import DATASET_PATH
 from metrics import get_metric
-
+from glob import glob
 
 if TYPE_CHECKING:
     from .model import Whisper
@@ -513,12 +513,6 @@ def cli():
     optimizer = get_optimizer(model, args)
     bind_model(model, optimizer)
     metric = get_metric(metric_name='CER', vocab=vocab)
-
-
-
-
-
-
 
 if __name__ == "__main__":
     cli()
